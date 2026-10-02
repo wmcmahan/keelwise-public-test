@@ -82,7 +82,9 @@ jobs:
   keelwise:
     # A release tag: @v0.1 takes that line's fixes, and an exact tag such
     # as @v0.1.0 holds still. @main runs unreleased code.
-    uses: wmcmahan/keelwise/.github/workflows/keelwise.yml@main
+    # Test copy: a public repository cannot call the private reusable workflow,
+    # so this calls a vendored copy of it, synced from wmcmahan/keelwise main.
+    uses: ./.github/workflows/keelwise-reusable.yml
     # Optional inputs. `runs-on` picks the runner, such as a self-hosted
     # one next to a local model. The wire values default to Keelwise's;
     # set them only to keep existing issues and PRs readable, since they

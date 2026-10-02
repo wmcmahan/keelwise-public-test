@@ -1,0 +1,388 @@
+# Keelwise: the reusable workflow a repository calls to run its maintainer.
+#
+# A repository adds one small caller file (see examples/caller.yml)
+# that lists the events below and passes its secrets. Each job here is one
+# task; its `if:` routes events to it, so an event no job wants starts no
+# runner. Behavior lives in the repository's optional .github/keelwise.yml,
+# which the runner reads from the default branch. The inputs below are the
+# wire values the job filters need before any code runs, and the same
+# values reach the code as KEELWISE_* variables, so the two cannot drift.
+#
+# Every job checks out the target repository at `target/` and Keelwise at
+# `keelwise/`, and runs only Keelwise's code. Fork pull requests are never
+# acted on: the PR routes require the head branch to live in this
+# repository, and the runner refuses fork PRs again on its own.
+
+name: Keelwise
+
+on:
+  workflow_call:
+    inputs:
+      keelwise-repository:
+        description: Where to fetch Keelwise from
+        type: string
+        default: wmcmahan/keelwise
+      keelwise-ref:
+        description: The Keelwise code to run. A release tag defaults it to itself, so leave it unset to run the release the `uses:` line names
+        type: string
+        default: main
+      runs-on:
+        description: The runner label jobs run on. A self-hosted label lets the model live on your own network
+        type: string
+        default: ubuntu-latest
+      approved-label:
+        type: string
+        default: maintenance-approved
+      managed-label:
+        type: string
+        default: maintenance-managed
+      needs-human-label:
+        type: string
+        default: needs-human
+      mention:
+        description: The handle that dispatches pr-revise from a PR comment
+        type: string
+        default: '@keelwise'
+      marker-namespace:
+        description: Finding markers in issue bodies. Frozen once issues carry it
+        type: string
+        default: 'keelwise:finding'
+      pr-marker-namespace:
+        description: Markers on PR comments. Frozen once PRs carry it
+        type: string
+        default: keelwise
+    secrets:
+      KEELWISE_TOKEN:
+        description: A token with contents, pull-requests, issues, and actions write. Events it creates trigger workflows, which the chain needs
+        required: true
+      KEELWISE_REVIEW_TOKEN:
+        description: A second account's token, so reviews of Keelwise's own PRs can approve
+        required: false
+      KEELWISE_SOURCE_TOKEN:
+        description: Read access to Keelwise's own repository while it is private. Unneeded once it is public
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      OPENAI_API_KEY:
+        required: false
+
+env:
+  KEELWISE_LABEL_APPROVED: ${{ inputs.approved-label }}
+  KEELWISE_LABEL_MANAGED: ${{ inputs.managed-label }}
+  KEELWISE_LABEL_NEEDS_HUMAN: ${{ inputs.needs-human-label }}
+  KEELWISE_MENTION: ${{ inputs.mention }}
+  KEELWISE_MARKER_NAMESPACE: ${{ inputs.marker-namespace }}
+  KEELWISE_PR_MARKER_NAMESPACE: ${{ inputs.pr-marker-namespace }}
+  KEELWISE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+  GH_TOKEN: ${{ secrets.KEELWISE_TOKEN }}
+  ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+  # Revision and fix loops carry review threads and check evidence; the
+  # engine's 50KB default truncates that mid-loop.
+  MAX_MEMORY_PROMPT_BYTES: '204800'
+
+jobs:
+  # Fix the highest-priority approved issue. Fires on the approval label, on
+  # a merged managed PR (the previous fix landing frees the pipeline), and on
+  # dispatch. One fix is in flight at a time: the constant group queues runs,
+  # and the runner exits while a managed PR is open.
+  issue-fix:
+    if: >
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'issue-fix') ||
+      (github.event_name == 'issues' && github.event.action == 'labeled' &&
+       github.event.label.name == inputs.approved-label) ||
+      (github.event_name == 'pull_request' && github.event.action == 'closed' &&
+       github.event.pull_request.merged == true &&
+       contains(github.event.pull_request.labels.*.name, inputs.managed-label))
+    runs-on: ${{ inputs.runs-on }}
+    permissions: { contents: write, pull-requests: write, issues: write, actions: write }
+    concurrency: { group: keelwise-fix-pipeline, cancel-in-progress: false }
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
+      - uses: ./keelwise/.github/actions/maintain
+        env:
+          ISSUE: ${{ github.event.issue.number || github.event.inputs.target || 0 }}
+        with:
+          command: issue-fix
+          args: --issueNumber "$ISSUE"
+
+  # Implement one approved feature ticket. Manual dispatch only, and gated
+  # on the same one-fix-in-flight pipeline as issue-fix.
+  implement-ticket:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'implement-ticket'
+    runs-on: ${{ inputs.runs-on }}
+    permissions: { contents: write, pull-requests: write, issues: write }
+    concurrency: { group: keelwise-fix-pipeline, cancel-in-progress: false }
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
+      - uses: ./keelwise/.github/actions/maintain
+        env:
+          ISSUE: ${{ github.event.inputs.target || 0 }}
+        with:
+          command: implement-ticket
+          args: --issueNumber "$ISSUE"
+
+  # An advisory review on every non-draft PR from this repository, and a
+  # verification pass when a managed PR is pushed to. Keelwise's proposals
+  # to change its own setup (onboard, improve) are left to a person.
+  pr-review:
+    if: >
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'pr-review') ||
+      (github.event_name == 'pull_request' &&
+       contains(fromJSON('["opened","ready_for_review","synchronize"]'), github.event.action) &&
+       github.event.pull_request.draft == false &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       !contains(github.event.pull_request.head.ref, 'keelwise/onboard-') &&
+       !contains(github.event.pull_request.head.ref, 'keelwise/improve-') &&
+       (github.event.action != 'synchronize' ||
+        contains(github.event.pull_request.labels.*.name, inputs.managed-label)))
+    runs-on: ${{ inputs.runs-on }}
+    permissions: { contents: read, pull-requests: write, issues: write }
+    concurrency: { group: 'keelwise-pr-review-${{ github.event.pull_request.number || github.event.inputs.target }}', cancel-in-progress: false }
+    env:
+      PR: ${{ github.event.pull_request.number || github.event.inputs.target }}
+      # GitHub forbids a token approving its own PR; a second account's
+      # token lets reviews of Keelwise's PRs carry the Approved state.
+      GH_TOKEN: ${{ secrets.KEELWISE_REVIEW_TOKEN || secrets.KEELWISE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
+      - uses: ./keelwise/.github/actions/maintain
+        with:
+          command: pr-review
+          args: --pr "$PR"
+      - if: failure()
+        uses: ./keelwise/.github/actions/maintain
+        env:
+          GH_TOKEN: ${{ secrets.KEELWISE_TOKEN }}
+        with:
+          command: notify-failure
+          args: --pr "$PR" --task pr-review
+
+  # Address review feedback on a managed PR: a change-requesting review, a
+  # review or comment carrying the mention. Only a trusted author steers it.
+  pr-revise:
+    if: >
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'pr-revise') ||
+      (github.event_name == 'pull_request_review' &&
+       github.event.pull_request.state == 'open' &&
+       contains(github.event.pull_request.labels.*.name, inputs.managed-label) &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) &&
+       (github.event.review.state == 'changes_requested' || contains(github.event.review.body, inputs.mention))) ||
+      (github.event_name == 'issue_comment' && github.event.action == 'created' &&
+       github.event.issue.pull_request != null &&
+       github.event.issue.state == 'open' &&
+       contains(github.event.issue.labels.*.name, inputs.managed-label) &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+       contains(github.event.comment.body, inputs.mention))
+    runs-on: ${{ inputs.runs-on }}
+    permissions: { contents: write, pull-requests: write, issues: write }
+    concurrency: { group: 'keelwise-pr-revise-${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.target }}', cancel-in-progress: false }
+    env:
+      PR: ${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.target }}
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
+      - uses: ./keelwise/.github/actions/maintain
+        with:
+          command: pr-revise
+          args: --pr "$PR"
+      - if: failure()
+        uses: ./keelwise/.github/actions/maintain
+        with:
+          command: notify-failure
+          args: --pr "$PR" --task pr-revise
+
+  # React to CI finishing on a PR from this repository. `workflow_run` covers
+  # CI that runs on GitHub Actions, whose own check suites never trigger a
+  # `check_suite` workflow; `check_suite` covers third-party CI apps.
+  # The job's own token reads the PR's checks, since a fine-grained token
+  # cannot; that read touches the commit, its check runs and statuses, and
+  # each run's workflow, hence contents, checks, statuses, and actions.
+  ci-react:
+    if: >
+      (github.event_name == 'workflow_run' && github.event.action == 'completed' &&
+       toJSON(github.event.workflow_run.pull_requests) != '[]') ||
+      (github.event_name == 'check_suite' && github.event.action == 'completed' &&
+       toJSON(github.event.check_suite.pull_requests) != '[]')
+    runs-on: ${{ inputs.runs-on }}
+    permissions: { contents: read, actions: read, pull-requests: write, issues: write, checks: read, statuses: read }
+    concurrency: { group: 'keelwise-ci-react-${{ github.event.workflow_run.head_branch || github.event.check_suite.head_branch }}', cancel-in-progress: false }
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
+      - uses: ./keelwise/.github/actions/maintain
+        env:
+          BRANCH: ${{ github.event.workflow_run.head_branch || github.event.check_suite.head_branch }}
+          # Fine-grained tokens cannot read check runs; the job's own token can.
+          KEELWISE_CHECKS_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.event.check_suite.head_sha }}
+        with:
+          command: ci-react
+          args: --branch "$BRANCH" --sha "$SHA"
+
+  # Keep the repository's docs honest. A push to the default branch fixes
+  # only what the push plausibly staled; a dispatch runs the full scan.
+  # Listing `push` in the caller file is the opt-in.
+  docs:
+    if: >
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'fix-repo-docs') ||
+      (github.event_name == 'push' &&
+       github.ref_name == github.event.repository.default_branch &&
+       github.event.forced == false &&
+       github.event.before != '0000000000000000000000000000000000000000')
+    runs-on: ${{ inputs.runs-on }}
+    permissions: { contents: write, pull-requests: write, issues: write }
+    concurrency: { group: keelwise-docs, cancel-in-progress: false }
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
+      - uses: ./keelwise/.github/actions/maintain
+        env:
+          BEFORE: ${{ github.event.before }}
+        with:
+          command: fix-repo-docs
+          args: ${{ github.event_name == 'push' && '--since "$BEFORE" --batch 2' || '--batch 3' }}
+
+  # The finders file issues and never open a PR. Manual dispatch only.
+  finder:
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      contains(fromJSON('["repo-audit","code-scan","feature-propose"]'), github.event.inputs.task)
+    runs-on: ${{ inputs.runs-on }}
+    permissions: { contents: read, issues: write }
+    concurrency: { group: 'keelwise-${{ github.event.inputs.task }}', cancel-in-progress: false }
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
+      - uses: ./keelwise/.github/actions/maintain
+        env:
+          FOCUS: ${{ github.event.inputs.focus }}
+        with:
+          command: ${{ github.event.inputs.task }}
+          args: ${{ github.event.inputs.task != 'code-scan' && '--focus "$FOCUS"' || '' }}
+
+  # Onboarding: survey the repository once and open one pull request
+  # proposing its rules, architecture notes, and audit scopes. The pull
+  # request is unlabeled, so a person reviews and merges it. Manual
+  # dispatch only.
+  onboard:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'onboard'
+    runs-on: ${{ inputs.runs-on }}
+    permissions: { contents: write, pull-requests: write }
+    concurrency: { group: keelwise-onboard, cancel-in-progress: false }
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
+      - uses: ./keelwise/.github/actions/maintain
+        with:
+          command: onboard
+
+  # Onboarding: mine the repository's closed pull requests into its bench
+  # on the data branch. Run once at install; running again adds only new
+  # cases. Manual dispatch only.
+  bench-init:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'bench-init'
+    runs-on: ${{ inputs.runs-on }}
+    permissions: { contents: write, pull-requests: read, issues: read }
+    concurrency: { group: keelwise-data, cancel-in-progress: false }
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
+      - uses: ./keelwise/.github/actions/maintain
+        with:
+          command: bench-init
+
+  # Self-improvement: try the candidate models the config lists on a sample
+  # of the bench, and open one pull request for a change that wins. It
+  # edits only .github/keelwise.yml and is never labeled for the fix
+  # pipeline, so a person merges it or not. Manual dispatch only.
+  improve:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'improve'
+    runs-on: ${{ inputs.runs-on }}
+    permissions: { contents: write, pull-requests: write }
+    concurrency: { group: keelwise-improve, cancel-in-progress: false }
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
+      - uses: ./keelwise/.github/actions/maintain
+        with:
+          command: improve
+
+  # The continuous half of the bench: on the hourly schedule, mine the pull
+  # requests decided in the last two days, Keelwise's own among them.
+  # Cases already stored are kept, so the overlap costs nothing.
+  bench-capture:
+    if: >
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'bench-capture')
+    runs-on: ${{ inputs.runs-on }}
+    permissions: { contents: write, pull-requests: read, issues: read }
+    concurrency: { group: keelwise-data, cancel-in-progress: false }
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
+      - uses: ./keelwise/.github/actions/maintain
+        with:
+          command: bench-capture
+
+  # The between-run backstop: wake an idle queue, flag a wedged managed PR.
+  reconcile-pipeline:
+    if: >
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'reconcile-pipeline')
+    runs-on: ${{ inputs.runs-on }}
+    permissions: { pull-requests: write, issues: write, actions: write }
+    concurrency: { group: keelwise-reconcile-pipeline, cancel-in-progress: false }
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
+      - uses: ./keelwise/.github/actions/maintain
+        with:
+          command: reconcile-pipeline
+
+  # The setup check: labels, token access, secrets, the caller file, and
+  # settings, reported in the log and the run summary. Writes nothing.
+  # Manual dispatch only.
+  doctor:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.task == 'doctor'
+    runs-on: ${{ inputs.runs-on }}
+    permissions: { contents: read }
+    env:
+      # Only whether the secret is set reaches the check, never its value.
+      KEELWISE_REVIEW_TOKEN_SET: ${{ secrets.KEELWISE_REVIEW_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v7
+        with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      - uses: actions/checkout@v7
+        with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
+      - uses: ./keelwise/.github/actions/maintain
+        with:
+          command: doctor
