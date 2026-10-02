@@ -98,8 +98,12 @@ jobs:
     permissions: { contents: write, pull-requests: write, issues: write, actions: write }
     concurrency: { group: keelwise-fix-pipeline, cancel-in-progress: false }
     steps:
-      - uses: actions/checkout@v7
+      - id: target
+        uses: actions/checkout@v7
         with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      # With a rejected KEELWISE_TOKEN nothing can be posted, so say so on the run.
+      - if: failure() && steps.target.outcome == 'failure'
+        run: echo "::error title=Keelwise could not check out this repository::KEELWISE_TOKEN was rejected or cannot see this repository, so Keelwise did nothing. Check the token's resource owner, that its repository access includes this repository with Contents read and write, and that the secret holds the whole token, then run the doctor task."
       - uses: actions/checkout@v7
         with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
       - uses: ./keelwise/.github/actions/maintain
@@ -117,8 +121,12 @@ jobs:
     permissions: { contents: write, pull-requests: write, issues: write }
     concurrency: { group: keelwise-fix-pipeline, cancel-in-progress: false }
     steps:
-      - uses: actions/checkout@v7
+      - id: target
+        uses: actions/checkout@v7
         with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      # With a rejected KEELWISE_TOKEN nothing can be posted, so say so on the run.
+      - if: failure() && steps.target.outcome == 'failure'
+        run: echo "::error title=Keelwise could not check out this repository::KEELWISE_TOKEN was rejected or cannot see this repository, so Keelwise did nothing. Check the token's resource owner, that its repository access includes this repository with Contents read and write, and that the secret holds the whole token, then run the doctor task."
       - uses: actions/checkout@v7
         with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
       - uses: ./keelwise/.github/actions/maintain
@@ -151,15 +159,19 @@ jobs:
       # token lets reviews of Keelwise's PRs carry the Approved state.
       GH_TOKEN: ${{ secrets.KEELWISE_REVIEW_TOKEN || secrets.KEELWISE_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
+      - id: target
+        uses: actions/checkout@v7
         with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      # With a rejected KEELWISE_TOKEN nothing can be posted, so say so on the run.
+      - if: failure() && steps.target.outcome == 'failure'
+        run: echo "::error title=Keelwise could not check out this repository::KEELWISE_TOKEN was rejected or cannot see this repository, so Keelwise did nothing. Check the token's resource owner, that its repository access includes this repository with Contents read and write, and that the secret holds the whole token, then run the doctor task."
       - uses: actions/checkout@v7
         with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
       - uses: ./keelwise/.github/actions/maintain
         with:
           command: pr-review
           args: --pr "$PR"
-      - if: failure()
+      - if: failure() && steps.target.outcome == 'success'
         uses: ./keelwise/.github/actions/maintain
         env:
           GH_TOKEN: ${{ secrets.KEELWISE_TOKEN }}
@@ -190,15 +202,19 @@ jobs:
     env:
       PR: ${{ github.event.pull_request.number || github.event.issue.number || github.event.inputs.target }}
     steps:
-      - uses: actions/checkout@v7
+      - id: target
+        uses: actions/checkout@v7
         with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      # With a rejected KEELWISE_TOKEN nothing can be posted, so say so on the run.
+      - if: failure() && steps.target.outcome == 'failure'
+        run: echo "::error title=Keelwise could not check out this repository::KEELWISE_TOKEN was rejected or cannot see this repository, so Keelwise did nothing. Check the token's resource owner, that its repository access includes this repository with Contents read and write, and that the secret holds the whole token, then run the doctor task."
       - uses: actions/checkout@v7
         with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
       - uses: ./keelwise/.github/actions/maintain
         with:
           command: pr-revise
           args: --pr "$PR"
-      - if: failure()
+      - if: failure() && steps.target.outcome == 'success'
         uses: ./keelwise/.github/actions/maintain
         with:
           command: notify-failure
@@ -220,8 +236,12 @@ jobs:
     permissions: { contents: read, actions: read, pull-requests: write, issues: write, checks: read, statuses: read }
     concurrency: { group: 'keelwise-ci-react-${{ github.event.workflow_run.head_branch || github.event.check_suite.head_branch }}', cancel-in-progress: false }
     steps:
-      - uses: actions/checkout@v7
+      - id: target
+        uses: actions/checkout@v7
         with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      # With a rejected KEELWISE_TOKEN nothing can be posted, so say so on the run.
+      - if: failure() && steps.target.outcome == 'failure'
+        run: echo "::error title=Keelwise could not check out this repository::KEELWISE_TOKEN was rejected or cannot see this repository, so Keelwise did nothing. Check the token's resource owner, that its repository access includes this repository with Contents read and write, and that the secret holds the whole token, then run the doctor task."
       - uses: actions/checkout@v7
         with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
       - uses: ./keelwise/.github/actions/maintain
@@ -248,8 +268,12 @@ jobs:
     permissions: { contents: write, pull-requests: write, issues: write }
     concurrency: { group: keelwise-docs, cancel-in-progress: false }
     steps:
-      - uses: actions/checkout@v7
+      - id: target
+        uses: actions/checkout@v7
         with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      # With a rejected KEELWISE_TOKEN nothing can be posted, so say so on the run.
+      - if: failure() && steps.target.outcome == 'failure'
+        run: echo "::error title=Keelwise could not check out this repository::KEELWISE_TOKEN was rejected or cannot see this repository, so Keelwise did nothing. Check the token's resource owner, that its repository access includes this repository with Contents read and write, and that the secret holds the whole token, then run the doctor task."
       - uses: actions/checkout@v7
         with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
       - uses: ./keelwise/.github/actions/maintain
@@ -268,8 +292,12 @@ jobs:
     permissions: { contents: read, issues: write }
     concurrency: { group: 'keelwise-${{ github.event.inputs.task }}', cancel-in-progress: false }
     steps:
-      - uses: actions/checkout@v7
+      - id: target
+        uses: actions/checkout@v7
         with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      # With a rejected KEELWISE_TOKEN nothing can be posted, so say so on the run.
+      - if: failure() && steps.target.outcome == 'failure'
+        run: echo "::error title=Keelwise could not check out this repository::KEELWISE_TOKEN was rejected or cannot see this repository, so Keelwise did nothing. Check the token's resource owner, that its repository access includes this repository with Contents read and write, and that the secret holds the whole token, then run the doctor task."
       - uses: actions/checkout@v7
         with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
       - uses: ./keelwise/.github/actions/maintain
@@ -289,8 +317,12 @@ jobs:
     permissions: { contents: write, pull-requests: write }
     concurrency: { group: keelwise-onboard, cancel-in-progress: false }
     steps:
-      - uses: actions/checkout@v7
+      - id: target
+        uses: actions/checkout@v7
         with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      # With a rejected KEELWISE_TOKEN nothing can be posted, so say so on the run.
+      - if: failure() && steps.target.outcome == 'failure'
+        run: echo "::error title=Keelwise could not check out this repository::KEELWISE_TOKEN was rejected or cannot see this repository, so Keelwise did nothing. Check the token's resource owner, that its repository access includes this repository with Contents read and write, and that the secret holds the whole token, then run the doctor task."
       - uses: actions/checkout@v7
         with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
       - uses: ./keelwise/.github/actions/maintain
@@ -306,8 +338,12 @@ jobs:
     permissions: { contents: write, pull-requests: read, issues: read }
     concurrency: { group: keelwise-data, cancel-in-progress: false }
     steps:
-      - uses: actions/checkout@v7
+      - id: target
+        uses: actions/checkout@v7
         with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      # With a rejected KEELWISE_TOKEN nothing can be posted, so say so on the run.
+      - if: failure() && steps.target.outcome == 'failure'
+        run: echo "::error title=Keelwise could not check out this repository::KEELWISE_TOKEN was rejected or cannot see this repository, so Keelwise did nothing. Check the token's resource owner, that its repository access includes this repository with Contents read and write, and that the secret holds the whole token, then run the doctor task."
       - uses: actions/checkout@v7
         with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
       - uses: ./keelwise/.github/actions/maintain
@@ -324,8 +360,12 @@ jobs:
     permissions: { contents: write, pull-requests: write }
     concurrency: { group: keelwise-improve, cancel-in-progress: false }
     steps:
-      - uses: actions/checkout@v7
+      - id: target
+        uses: actions/checkout@v7
         with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      # With a rejected KEELWISE_TOKEN nothing can be posted, so say so on the run.
+      - if: failure() && steps.target.outcome == 'failure'
+        run: echo "::error title=Keelwise could not check out this repository::KEELWISE_TOKEN was rejected or cannot see this repository, so Keelwise did nothing. Check the token's resource owner, that its repository access includes this repository with Contents read and write, and that the secret holds the whole token, then run the doctor task."
       - uses: actions/checkout@v7
         with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
       - uses: ./keelwise/.github/actions/maintain
@@ -343,8 +383,12 @@ jobs:
     permissions: { contents: write, pull-requests: read, issues: read }
     concurrency: { group: keelwise-data, cancel-in-progress: false }
     steps:
-      - uses: actions/checkout@v7
+      - id: target
+        uses: actions/checkout@v7
         with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      # With a rejected KEELWISE_TOKEN nothing can be posted, so say so on the run.
+      - if: failure() && steps.target.outcome == 'failure'
+        run: echo "::error title=Keelwise could not check out this repository::KEELWISE_TOKEN was rejected or cannot see this repository, so Keelwise did nothing. Check the token's resource owner, that its repository access includes this repository with Contents read and write, and that the secret holds the whole token, then run the doctor task."
       - uses: actions/checkout@v7
         with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
       - uses: ./keelwise/.github/actions/maintain
@@ -360,8 +404,12 @@ jobs:
     permissions: { pull-requests: write, issues: write, actions: write }
     concurrency: { group: keelwise-reconcile-pipeline, cancel-in-progress: false }
     steps:
-      - uses: actions/checkout@v7
+      - id: target
+        uses: actions/checkout@v7
         with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      # With a rejected KEELWISE_TOKEN nothing can be posted, so say so on the run.
+      - if: failure() && steps.target.outcome == 'failure'
+        run: echo "::error title=Keelwise could not check out this repository::KEELWISE_TOKEN was rejected or cannot see this repository, so Keelwise did nothing. Check the token's resource owner, that its repository access includes this repository with Contents read and write, and that the secret holds the whole token, then run the doctor task."
       - uses: actions/checkout@v7
         with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
       - uses: ./keelwise/.github/actions/maintain
@@ -379,8 +427,11 @@ jobs:
       # Only whether the secret is set reaches the check, never its value.
       KEELWISE_REVIEW_TOKEN_SET: ${{ secrets.KEELWISE_REVIEW_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v7
-        with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ secrets.KEELWISE_TOKEN }}' }
+      # The built-in token always reads the repository, so doctor can start and
+      # report a bad KEELWISE_TOKEN instead of failing on it.
+      - id: target
+        uses: actions/checkout@v7
+        with: { path: target, ref: '${{ github.event.repository.default_branch }}', fetch-depth: 0, token: '${{ github.token }}' }
       - uses: actions/checkout@v7
         with: { repository: '${{ inputs.keelwise-repository }}', ref: '${{ inputs.keelwise-ref }}', path: keelwise, token: '${{ secrets.KEELWISE_SOURCE_TOKEN || github.token }}' }
       - uses: ./keelwise/.github/actions/maintain
