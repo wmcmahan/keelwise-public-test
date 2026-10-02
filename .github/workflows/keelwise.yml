@@ -1,0 +1,99 @@
+# Keelwise caller: copy to .github/workflows/keelwise.yml in your repository.
+#
+# The events below are everything Keelwise listens to; a reusable workflow
+# cannot declare its own. Events no task wants start no runner, so the
+# comment and check-suite traffic costs nothing. Settings live in the
+# optional .github/keelwise.yml, read from your default branch.
+#
+# Secrets:
+#   KEELWISE_TOKEN (required): a fine-grained token with contents,
+#     pull-requests, issues, and actions write. Events it creates trigger
+#     workflows, which the fix -> review -> revise -> merge chain needs;
+#     events from the built-in GITHUB_TOKEN do not.
+#   ANTHROPIC_API_KEY: the model key.
+#   KEELWISE_REVIEW_TOKEN (optional): a second account's token, so reviews
+#     of Keelwise's own PRs can approve rather than only comment.
+#   KEELWISE_SOURCE_TOKEN (optional): read-only access to the Keelwise
+#     repository, needed only while it is private.
+
+name: Keelwise
+
+on:
+  issues:
+    types: [labeled]
+  pull_request:
+    types: [opened, ready_for_review, synchronize, closed]
+  pull_request_review:
+    types: [submitted]
+  issue_comment:
+    types: [created]
+  # Name the workflows that run your CI. A check suite created by GitHub
+  # Actions never triggers a `check_suite` workflow, so without this a
+  # failing CI run never reaches Keelwise.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  # CI apps outside GitHub Actions report through check suites.
+  check_suite:
+    types: [completed]
+  # Hourly: wake an idle queue, flag stuck PRs, and add newly decided
+  # pull requests to the bench.
+  schedule:
+    - cron: '23 * * * *'
+  # Uncomment to fix the docs a push to the default branch made stale.
+  # push:
+  #   branches: [main]
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Task to run
+        type: choice
+        options:
+          - doctor
+          - issue-fix
+          - implement-ticket
+          - pr-review
+          - pr-revise
+          - fix-repo-docs
+          - repo-audit
+          - code-scan
+          - feature-propose
+          - reconcile-pipeline
+          - onboard
+          - bench-init
+          - bench-capture
+          - improve
+      target:
+        description: Issue or PR number (0 picks the next one)
+        default: '0'
+      focus:
+        description: Steer repo-audit or feature-propose toward an area
+        default: ''
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+  checks: read
+  statuses: read
+
+jobs:
+  keelwise:
+    # A release tag: @v0.1 takes that line's fixes, and an exact tag such
+    # as @v0.1.0 holds still. @main runs unreleased code.
+    uses: wmcmahan/keelwise/.github/workflows/keelwise.yml@main
+    # Optional inputs. `runs-on` picks the runner, such as a self-hosted
+    # one next to a local model. The wire values default to Keelwise's;
+    # set them only to keep existing issues and PRs readable, since they
+    # are frozen once in use.
+    # with:
+    #   runs-on: self-hosted
+    #   mention: '@keelwise'
+    #   marker-namespace: 'keelwise:finding'
+    #   pr-marker-namespace: keelwise
+    secrets:
+      KEELWISE_TOKEN: ${{ secrets.KEELWISE_TOKEN }}
+      KEELWISE_REVIEW_TOKEN: ${{ secrets.KEELWISE_REVIEW_TOKEN }}
+      KEELWISE_SOURCE_TOKEN: ${{ secrets.KEELWISE_SOURCE_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
