@@ -4,3 +4,8 @@ export function sum(values) {
   for (const value of values) total += value;
   return total;
 }
+
+/** The smallest value in a list of numbers. */
+export function min(values) {
+  return Math.min(...values);
+}
